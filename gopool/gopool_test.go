@@ -1,63 +1,63 @@
 package gopool
 
 import (
-	"log"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
-func Test_Go(t *testing.T) {
-	p := NewWithSingle()
-
-	for i := 0; i < 5; i++ {
-
-		func(i int) {
-			p.Go(func() {
-				t.Logf("show %v", i)
-			})
-		}(i)
-
+func calcAdd(t *testing.T, p *GoPool, n int, counter *int32) {
+	for i := 0; i < n; i++ {
+		p.Exec(int32(i))
 	}
-
+	// t.Log("workCount", p.WorkerCount())
 	p.ShutdownAndWait()
-}
+	// t.Log("workCount", p.WorkerCount())
 
-func Test_Exec(t *testing.T) {
-	p := NewWithSingle(WithHandleMessage(func(m *Message) {
-		t.Log(m.Arg)
-	}))
-
-	for i := 0; i < 5; i++ {
-
-		p.Exec(i)
-
+	got := int(atomic.LoadInt32(counter))
+	expect := (0 + n - 1) * n / 2
+	if got != expect {
+		t.Fatalf("expect %v, but got %v", expect, got)
 	}
-
-	p.ShutdownAndWait()
 }
 
 func Test_Cached_Exec(t *testing.T) {
+	var couter int32
+	var n int = 10000
 	p := NewWithCached(WithHandleMessage(func(m *Message) {
-		log.Println(m.Arg)
+		v := m.Arg.(int32)
+		atomic.AddInt32(&couter, v)
+		time.Sleep(time.Millisecond * 20)
+	}), WithRejectMessage(func(m *Message) {
+		t.Log("reject", m.Arg)
 	}))
-
-	for i := 0; i < 500; i++ {
-
-		p.Exec(100000 + i)
-
-	}
-	p.ShutdownAndWait()
+	calcAdd(t, p, n, &couter)
 }
 
-func Benchmark_Cached(b *testing.B) {
+func Test_Fixed_Exec(t *testing.T) {
+	var couter int32
+	var n int = 10000
+	p := NewWithFixed(300, WithHandleMessage(func(m *Message) {
+		v := m.Arg.(int32)
+		atomic.AddInt32(&couter, v)
+		time.Sleep(time.Millisecond * 20)
+	}), WithRejectMessage(func(m *Message) {
+		t.Log("reject", m.Arg)
+	}))
 
-	for i := 0; i < b.N; i++ {
-		p := NewWithCached()
-		for j := 0; j < 100000; j++ {
-			func(j int) {
-				p.Go(func() {
-					_ = j
-				})
-			}(j)
-		}
-	}
+	calcAdd(t, p, n, &couter)
+}
+
+func Test_Single_Exec(t *testing.T) {
+	var couter int32
+	var n int = 1000
+	p := NewWithSingle(WithHandleMessage(func(m *Message) {
+		v := m.Arg.(int32)
+		atomic.AddInt32(&couter, v)
+		time.Sleep(time.Millisecond * 20)
+	}), WithRejectMessage(func(m *Message) {
+		t.Log("reject", m.Arg)
+	}))
+
+	calcAdd(t, p, n, &couter)
 }

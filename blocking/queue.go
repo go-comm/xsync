@@ -6,6 +6,12 @@ import (
 	"sync"
 )
 
+var noWait, _ = context.WithTimeout(context.Background(), 0)
+
+func NoWait() context.Context {
+	return noWait
+}
+
 type Queue interface {
 	Offer(ctx context.Context, x interface{}) bool
 	Take(ctx context.Context) interface{}
@@ -20,7 +26,7 @@ type BoundedQueue struct {
 }
 
 func (q *BoundedQueue) Offer(ctx context.Context, x interface{}) bool {
-	if ctx == nil || ctx == context.TODO() || ctx == context.Background() {
+	if ctx == nil || ctx == NoWait() {
 		select {
 		case q.c <- x:
 			return true
@@ -38,7 +44,7 @@ func (q *BoundedQueue) Offer(ctx context.Context, x interface{}) bool {
 }
 
 func (q *BoundedQueue) Take(ctx context.Context) interface{} {
-	if ctx == nil || ctx == context.TODO() || ctx == context.Background() {
+	if ctx == nil || ctx == NoWait() {
 		select {
 		case x := <-q.c:
 			return x
@@ -55,10 +61,14 @@ func (q *BoundedQueue) Take(ctx context.Context) interface{} {
 	}
 }
 
-func NewUnBoundedQueue() *UnBoundedQueue {
+func NewUnBoundedQueue(bufSize ...int) *UnBoundedQueue {
+	size := 1024
+	if len(bufSize) > 0 && bufSize[0] > 0 {
+		size = bufSize[0]
+	}
 	return &UnBoundedQueue{
 		list: list.New(),
-		c:    make(chan interface{}, 1024),
+		c:    make(chan interface{}, size),
 	}
 }
 
@@ -98,6 +108,7 @@ INSERT:
 		}
 		if result == nil {
 			result = e.Value
+			q.list.Remove(e)
 			continue
 		}
 		select {
@@ -110,7 +121,7 @@ INSERT:
 	q.mutex.Unlock()
 
 	if result == nil {
-		if ctx == nil || ctx == context.TODO() || ctx == context.Background() {
+		if ctx == nil || ctx == NoWait() {
 			select {
 			case x := <-q.c:
 				return x

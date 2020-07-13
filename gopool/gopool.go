@@ -2,7 +2,6 @@ package gopool
 
 import (
 	"container/list"
-	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -24,7 +23,7 @@ const (
 )
 
 func NewWithCached(opts ...Option) *GoPool {
-	return New(0, maxCoreSize, 30, blocking.NewBoundedQueue(16), opts...)
+	return New(0, maxCoreSize, 30, blocking.NewBoundedQueue(1), opts...)
 }
 
 func NewWithFixed(n int, opts ...Option) *GoPool {
@@ -40,6 +39,7 @@ func New(coreSize, maxCoreSize int, keepAliveTime time.Duration, queue blocking.
 		coreSize:      int32(coreSize),
 		maxCoreSize:   int32(maxCoreSize),
 		keepAliveTime: keepAliveTime,
+		queue:         queue,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -123,6 +123,11 @@ func (p *GoPool) workerCount(state int32) int32 {
 	return state & capacityMask
 }
 
+func (p *GoPool) WorkerCount() int {
+	state := atomic.LoadInt32(&p.state)
+	return int(p.workerCount(state))
+}
+
 func (p *GoPool) isRunning(state int32) bool {
 	return state < stateShutdown
 }
@@ -130,7 +135,7 @@ func (p *GoPool) isRunning(state int32) bool {
 func (p *GoPool) addWorker(m *Message) bool {
 	for {
 		state := atomic.LoadInt32(&p.state)
-		if p.workerCount(state) > p.maxCoreSize {
+		if p.workerCount(state) >= p.maxCoreSize {
 			return false
 		}
 		if atomic.CompareAndSwapInt32(&p.state, state, state+1) {
@@ -169,7 +174,7 @@ func (p *GoPool) removeWorker(w *worker) {
 }
 
 func (p *GoPool) offerToQueue(m *Message) bool {
-	return p.queue.Offer(context.TODO(), m)
+	return p.queue.Offer(blocking.NoWait(), m)
 }
 
 func (p *GoPool) reject(m *Message) {

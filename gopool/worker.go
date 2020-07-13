@@ -5,6 +5,8 @@ import (
 	"context"
 	"sync/atomic"
 	"time"
+
+	"github.com/go-comm/xsync/blocking"
 )
 
 const (
@@ -34,8 +36,8 @@ type worker struct {
 	done         chan struct{}
 }
 
-func (w *worker) isRunning() bool {
-	return atomic.LoadInt32(&w.state) == stateWorkerRunning
+func (w *worker) isRunning(state int32) bool {
+	return state == stateWorkerRunning
 }
 
 func (w *worker) run() {
@@ -60,15 +62,17 @@ Loop:
 		if p.keepAliveTime > 0 {
 			keepAliveTime = p.keepAliveTime
 		}
-		if !w.isRunning() {
-			break Loop
+		state := atomic.LoadInt32(&w.state)
+		if w.isRunning(state) {
+			ctx, _ = context.WithTimeout(ctx, keepAliveTime)
+		} else if state <= stateWorkerShutdown {
+			ctx = blocking.NoWait()
 		}
-		ctx, _ = context.WithTimeout(ctx, keepAliveTime)
 		im := p.queue.Take(ctx)
 		if im == nil {
 			// check again
 			// sometimes msg is nil because of shutdown worker
-			im = p.queue.Take(context.TODO())
+			im = p.queue.Take(blocking.NoWait())
 			if im == nil {
 				break Loop
 			}
