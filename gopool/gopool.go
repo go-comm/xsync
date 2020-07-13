@@ -149,7 +149,7 @@ func (p *GoPool) addWorker(m *Message) bool {
 func (p *GoPool) removeWorker(w *worker) {
 	for {
 		state := atomic.LoadInt32(&p.state)
-		if atomic.CompareAndSwapInt32(&p.state, state, state+1) {
+		if atomic.CompareAndSwapInt32(&p.state, state, state-1) {
 			break
 		}
 	}
@@ -161,7 +161,7 @@ func (p *GoPool) removeWorker(w *worker) {
 	w.cancel = nil
 
 	state := atomic.LoadInt32(&p.state)
-	if p.workerCount(state) < p.coreSize {
+	if p.isRunning(state) && p.workerCount(state) < p.coreSize {
 		p.addWorker(nil)
 	}
 }
