@@ -163,6 +163,8 @@ func (p *GoPool) removeWorker(w *worker) {
 	state := atomic.LoadInt32(&p.state)
 	if p.isRunning(state) && p.workerCount(state) < p.coreSize {
 		p.addWorker(nil)
+	} else if state < stateTerminal && p.workerCount(state) == 0 {
+		atomic.StoreInt32(&p.state, state|stateTerminal)
 	}
 }
 
@@ -178,33 +180,42 @@ func (p *GoPool) reject(m *Message) {
 
 func (p *GoPool) Shutdown() {
 	var ws []*worker
-	p.mutex.RLock()
-	for e := p.workers.Front(); e != nil; e = e.Next() {
-		w := e.Value.(*worker)
-		if w != nil {
-			ws = append(ws, w)
+	state := atomic.LoadInt32(&p.state)
+	if p.isRunning(state) {
+		atomic.StoreInt32(&p.state, state|stateShutdown)
+		p.mutex.RLock()
+		for e := p.workers.Front(); e != nil; e = e.Next() {
+			w := e.Value.(*worker)
+			if w != nil {
+				ws = append(ws, w)
+			}
+		}
+		p.mutex.RLock()
+		for i := len(ws) - 1; i >= 0; i-- {
+			ws[i].shutdown()
 		}
 	}
-	p.mutex.RLock()
-	for i := len(ws) - 1; i >= 0; i-- {
-		ws[i].shutdown()
-	}
+
 }
 
 func (p *GoPool) ShutdownAndWait() {
 	var ws []*worker
-	p.mutex.RLock()
-	for e := p.workers.Front(); e != nil; e = e.Next() {
-		w := e.Value.(*worker)
-		if w != nil {
-			ws = append(ws, w)
+	state := atomic.LoadInt32(&p.state)
+	if p.isRunning(state) {
+		atomic.StoreInt32(&p.state, state|stateShutdown)
+		p.mutex.RLock()
+		for e := p.workers.Front(); e != nil; e = e.Next() {
+			w := e.Value.(*worker)
+			if w != nil {
+				ws = append(ws, w)
+			}
 		}
-	}
-	p.mutex.RLock()
-	for i := len(ws) - 1; i >= 0; i-- {
-		ws[i].shutdown()
-	}
-	for i := len(ws) - 1; i >= 0; i-- {
-		ws[i].wait()
+		p.mutex.RLock()
+		for i := len(ws) - 1; i >= 0; i-- {
+			ws[i].shutdown()
+		}
+		for i := len(ws) - 1; i >= 0; i-- {
+			ws[i].wait()
+		}
 	}
 }
