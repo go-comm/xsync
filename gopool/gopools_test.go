@@ -6,6 +6,21 @@ import (
 	"time"
 )
 
+func Test_Single_Go(t *testing.T) {
+	p := NewWithSingle()
+	got := make(chan int)
+	expect := 10
+	p.Go(func() {
+		got <- expect
+	})
+
+	c := <-got
+	if c != expect {
+		t.Fatalf("expect %v, but got %v", expect, c)
+	}
+
+}
+
 func calcAdd(t *testing.T, p *GoPool, n int, counter *int32) {
 	for i := 0; i < n; i++ {
 		p.Exec(int32(i))

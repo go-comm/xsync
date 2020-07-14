@@ -69,11 +69,11 @@ Loop:
 		} else if state <= stateWorkerShutdown {
 			ctx = blocking.NoWait()
 		}
-		im := p.queue.Take(ctx)
+		im := p.queue.Poll(ctx)
 		if im == nil {
 			// check again
 			// sometimes msg is nil because of shutdown worker
-			im = p.queue.Take(blocking.NoWait())
+			im = p.queue.Poll(blocking.NoWait())
 			if im == nil {
 				break Loop
 			}

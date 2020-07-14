@@ -15,7 +15,7 @@ func NoWait() context.Context {
 
 type Queue interface {
 	Offer(ctx context.Context, x interface{}) bool
-	Take(ctx context.Context) interface{}
+	Poll(ctx context.Context) interface{}
 }
 
 func NewBoundedQueue(size int) *BoundedQueue {
@@ -44,7 +44,7 @@ func (q *BoundedQueue) Offer(ctx context.Context, x interface{}) bool {
 	}
 }
 
-func (q *BoundedQueue) Take(ctx context.Context) interface{} {
+func (q *BoundedQueue) Poll(ctx context.Context) interface{} {
 	if ctx == nil || ctx == NoWait() {
 		select {
 		case x := <-q.c:
@@ -91,7 +91,7 @@ func (q *UnBoundedQueue) Offer(ctx context.Context, x interface{}) bool {
 	}
 }
 
-func (q *UnBoundedQueue) Take(ctx context.Context) interface{} {
+func (q *UnBoundedQueue) Poll(ctx context.Context) interface{} {
 	select {
 	case x := <-q.c:
 		return x
