@@ -23,7 +23,7 @@ func calcAdd(t *testing.T, p *GoPool, n int, counter *int32) {
 
 func Test_Cached_Exec(t *testing.T) {
 	var couter int32
-	var n int = 10000
+	var n int = 5000
 	p := NewWithCached(WithHandleMessage(func(m *Message) {
 		v := m.Arg.(int32)
 		atomic.AddInt32(&couter, v)
@@ -36,7 +36,7 @@ func Test_Cached_Exec(t *testing.T) {
 
 func Test_Fixed_Exec(t *testing.T) {
 	var couter int32
-	var n int = 10000
+	var n int = 5000
 	p := NewWithFixed(300, WithHandleMessage(func(m *Message) {
 		v := m.Arg.(int32)
 		atomic.AddInt32(&couter, v)
@@ -50,7 +50,7 @@ func Test_Fixed_Exec(t *testing.T) {
 
 func Test_Single_Exec(t *testing.T) {
 	var couter int32
-	var n int = 1000
+	var n int = 500
 	p := NewWithSingle(WithHandleMessage(func(m *Message) {
 		v := m.Arg.(int32)
 		atomic.AddInt32(&couter, v)

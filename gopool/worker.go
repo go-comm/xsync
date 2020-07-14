@@ -4,7 +4,6 @@ import (
 	"container/list"
 	"context"
 	"sync/atomic"
-	"time"
 
 	"github.com/go-comm/xsync/blocking"
 )
@@ -41,14 +40,15 @@ func (w *worker) isRunning(state int32) bool {
 }
 
 func (w *worker) run() {
+	var ctx context.Context
+	var state int32
 	p := w.p
 	defer func() {
 		atomic.StoreInt32(&w.state, stateWorkerTerminal)
 		close(w.done)
 		p.removeWorker(w)
 	}()
-	ctx := w.ctx
-	keepAliveTime := 30 * time.Second
+	keepAliveTime := p.KeepAliveTime()
 	atomic.StoreInt32(&w.state, stateWorkerRunning)
 
 	if w.firstMessage != nil {
@@ -59,12 +59,13 @@ func (w *worker) run() {
 
 Loop:
 	for {
-		if p.keepAliveTime > 0 {
-			keepAliveTime = p.keepAliveTime
-		}
-		state := atomic.LoadInt32(&w.state)
+		state = atomic.LoadInt32(&w.state)
+		ctx = w.ctx
 		if w.isRunning(state) {
-			ctx, _ = context.WithTimeout(ctx, keepAliveTime)
+			keepAliveTime = p.KeepAliveTime()
+			if keepAliveTime > 0 {
+				ctx, _ = context.WithTimeout(ctx, keepAliveTime)
+			}
 		} else if state <= stateWorkerShutdown {
 			ctx = blocking.NoWait()
 		}
@@ -88,7 +89,7 @@ func (w *worker) dispatchMessage(m *Message) {
 	p := w.p
 	defer func() {
 		if err := recover(); err != nil {
-			p.reject(m)
+			p.handleError(m, err)
 		}
 	}()
 

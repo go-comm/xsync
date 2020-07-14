@@ -3,6 +3,7 @@ package gopool
 import (
 	"container/list"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,18 +23,6 @@ const (
 	stateTerminal = 2 << bits
 )
 
-func NewWithCached(opts ...Option) *GoPool {
-	return New(0, maxCoreSize, 30, blocking.NewBoundedQueue(1), opts...)
-}
-
-func NewWithFixed(n int, opts ...Option) *GoPool {
-	return New(n, n, 0, blocking.NewUnBoundedQueue(), opts...)
-}
-
-func NewWithSingle(opts ...Option) *GoPool {
-	return New(1, 1, 0, blocking.NewUnBoundedQueue(), opts...)
-}
-
 func New(coreSize, maxCoreSize int, keepAliveTime time.Duration, queue blocking.Queue, opts ...Option) *GoPool {
 	p := &GoPool{
 		coreSize:      int32(coreSize),
@@ -49,6 +38,9 @@ func New(coreSize, maxCoreSize int, keepAliveTime time.Duration, queue blocking.
 	}
 	if p.queue == nil {
 		p.queue = blocking.NewUnBoundedQueue()
+	}
+	if p.errorHandler == nil {
+		p.errorHandler = DefaultErrorHandler
 	}
 	p.workers = list.New()
 	return p
@@ -74,6 +66,16 @@ func WithRejectMessage(h func(*Message)) Option {
 	}
 }
 
+func WithErrorHandler(h func(*Message, interface{})) Option {
+	return func(p *GoPool) {
+		p.errorHandler = h
+	}
+}
+
+func DefaultErrorHandler(m *Message, e interface{}) {
+	log.Printf("gopool: error handler. %v", e)
+}
+
 type Message struct {
 	Callback func()
 	Arg      interface{}
@@ -87,6 +89,7 @@ type GoPool struct {
 	queue         blocking.Queue
 	handeMessage  func(*Message)
 	rejectMessage func(*Message)
+	errorHandler  func(*Message, interface{})
 	workers       *list.List
 	mutex         sync.RWMutex
 }
@@ -126,6 +129,10 @@ func (p *GoPool) workerCount(state int32) int32 {
 func (p *GoPool) WorkerCount() int {
 	state := atomic.LoadInt32(&p.state)
 	return int(p.workerCount(state))
+}
+
+func (p *GoPool) KeepAliveTime() time.Duration {
+	return p.keepAliveTime
 }
 
 func (p *GoPool) isRunning(state int32) bool {
@@ -180,6 +187,12 @@ func (p *GoPool) offerToQueue(m *Message) bool {
 func (p *GoPool) reject(m *Message) {
 	if p.rejectMessage != nil {
 		p.rejectMessage(m)
+	}
+}
+
+func (p *GoPool) handleError(m *Message, e interface{}) {
+	if p.errorHandler != nil {
+		p.errorHandler(m, e)
 	}
 }
 

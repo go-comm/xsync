@@ -4,9 +4,10 @@ import (
 	"container/list"
 	"context"
 	"sync"
+	"time"
 )
 
-var noWait, _ = context.WithTimeout(context.Background(), 0)
+var noWait, _ = context.WithDeadline(context.Background(), time.Unix(0, 0))
 
 func NoWait() context.Context {
 	return noWait
