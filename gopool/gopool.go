@@ -3,7 +3,6 @@ package gopool
 import (
 	"container/list"
 	"fmt"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -73,7 +72,7 @@ func WithErrorHandler(h func(*Message, interface{})) Option {
 }
 
 func DefaultErrorHandler(m *Message, e interface{}) {
-	log.Printf("gopool: error handler. %v", e)
+	PrintStack(e)
 }
 
 type Message struct {
@@ -196,7 +195,7 @@ func (p *GoPool) handleError(m *Message, e interface{}) {
 	}
 }
 
-func (p *GoPool) Shutdown() {
+func (p *GoPool) shutdownAndWait(wait bool) {
 	var ws []*worker
 	state := atomic.LoadInt32(&p.state)
 	if p.isRunning(state) {
@@ -212,28 +211,18 @@ func (p *GoPool) Shutdown() {
 		for i := len(ws) - 1; i >= 0; i-- {
 			ws[i].shutdown()
 		}
+		if wait {
+			for i := len(ws) - 1; i >= 0; i-- {
+				ws[i].wait()
+			}
+		}
 	}
+}
 
+func (p *GoPool) Shutdown() {
+	p.shutdownAndWait(false)
 }
 
 func (p *GoPool) ShutdownAndWait() {
-	var ws []*worker
-	state := atomic.LoadInt32(&p.state)
-	if p.isRunning(state) {
-		atomic.StoreInt32(&p.state, state|stateShutdown)
-		p.mutex.RLock()
-		for e := p.workers.Front(); e != nil; e = e.Next() {
-			w := e.Value.(*worker)
-			if w != nil {
-				ws = append(ws, w)
-			}
-		}
-		p.mutex.RLock()
-		for i := len(ws) - 1; i >= 0; i-- {
-			ws[i].shutdown()
-		}
-		for i := len(ws) - 1; i >= 0; i-- {
-			ws[i].wait()
-		}
-	}
+	p.shutdownAndWait(true)
 }
