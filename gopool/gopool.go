@@ -2,6 +2,7 @@ package gopool
 
 import (
 	"container/list"
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -180,7 +181,7 @@ func (p *GoPool) removeWorker(w *worker) {
 }
 
 func (p *GoPool) offerToQueue(m *Message) bool {
-	return p.queue.Offer(blocking.NoWait(), m)
+	return p.queue.Offer(context.TODO(), m)
 }
 
 func (p *GoPool) reject(m *Message) {

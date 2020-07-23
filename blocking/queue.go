@@ -4,21 +4,16 @@ import (
 	"container/list"
 	"context"
 	"sync"
-	"time"
 )
-
-var noWait, _ = context.WithDeadline(context.Background(), time.Unix(0, 0))
-
-func NoWait() context.Context {
-	return noWait
-}
 
 type Queue interface {
 	Offer(ctx context.Context, x interface{}) bool
 	Poll(ctx context.Context) interface{}
+	Put(ctx context.Context, x interface{}) bool
+	Take(ctx context.Context) interface{}
 }
 
-func NewBoundedQueue(size int) *BoundedQueue {
+func NewBoundedQueue(size int) Queue {
 	return &BoundedQueue{c: make(chan interface{}, size)}
 }
 
@@ -27,15 +22,15 @@ type BoundedQueue struct {
 }
 
 func (q *BoundedQueue) Offer(ctx context.Context, x interface{}) bool {
-	if ctx == nil || ctx == NoWait() {
-		select {
-		case q.c <- x:
-			return true
-		default:
-			return false
-		}
+	select {
+	case q.c <- x:
+		return true
+	default:
+		return false
 	}
+}
 
+func (q *BoundedQueue) Put(ctx context.Context, x interface{}) bool {
 	select {
 	case <-ctx.Done():
 		return false
@@ -45,15 +40,15 @@ func (q *BoundedQueue) Offer(ctx context.Context, x interface{}) bool {
 }
 
 func (q *BoundedQueue) Poll(ctx context.Context) interface{} {
-	if ctx == nil || ctx == NoWait() {
-		select {
-		case x := <-q.c:
-			return x
-		default:
-			return nil
-		}
+	select {
+	case x := <-q.c:
+		return x
+	default:
+		return nil
 	}
+}
 
+func (q *BoundedQueue) Take(ctx context.Context) interface{} {
 	select {
 	case <-ctx.Done():
 		return nil
@@ -62,7 +57,7 @@ func (q *BoundedQueue) Poll(ctx context.Context) interface{} {
 	}
 }
 
-func NewUnBoundedQueue(bufSize ...int) *UnBoundedQueue {
+func NewUnBoundedQueue(bufSize ...int) Queue {
 	size := 1024
 	if len(bufSize) > 0 && bufSize[0] > 0 {
 		size = bufSize[0]
@@ -80,6 +75,10 @@ type UnBoundedQueue struct {
 }
 
 func (q *UnBoundedQueue) Offer(ctx context.Context, x interface{}) bool {
+	return q.Put(ctx, x)
+}
+
+func (q *UnBoundedQueue) Put(ctx context.Context, x interface{}) bool {
 	select {
 	case q.c <- x:
 		return true
@@ -91,7 +90,15 @@ func (q *UnBoundedQueue) Offer(ctx context.Context, x interface{}) bool {
 	}
 }
 
+func (q *UnBoundedQueue) Take(ctx context.Context) interface{} {
+	return q.take(ctx, true)
+}
+
 func (q *UnBoundedQueue) Poll(ctx context.Context) interface{} {
+	return q.take(ctx, false)
+}
+
+func (q *UnBoundedQueue) take(ctx context.Context, wait bool) interface{} {
 	select {
 	case x := <-q.c:
 		return x
@@ -122,7 +129,7 @@ INSERT:
 	q.mutex.Unlock()
 
 	if result == nil {
-		if ctx == nil || ctx == NoWait() {
+		if ctx == nil || !wait {
 			select {
 			case x := <-q.c:
 				return x

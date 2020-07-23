@@ -4,8 +4,6 @@ import (
 	"container/list"
 	"context"
 	"sync/atomic"
-
-	"github.com/go-comm/xsync/blocking"
 )
 
 const (
@@ -61,19 +59,22 @@ Loop:
 	for {
 		state = atomic.LoadInt32(&w.state)
 		ctx = w.ctx
+		var im interface{}
 		if w.isRunning(state) {
 			keepAliveTime = p.KeepAliveTime()
 			if keepAliveTime > 0 {
 				ctx, _ = context.WithTimeout(ctx, keepAliveTime)
 			}
+			im = p.queue.Take(ctx)
 		} else if state <= stateWorkerShutdown {
-			ctx = blocking.NoWait()
+			im = p.queue.Poll(ctx)
+		} else {
+			break Loop
 		}
-		im := p.queue.Poll(ctx)
 		if im == nil {
 			// check again
 			// sometimes msg is nil because of shutdown worker
-			im = p.queue.Poll(blocking.NoWait())
+			im = p.queue.Poll(ctx)
 			if im == nil {
 				break Loop
 			}
