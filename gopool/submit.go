@@ -73,15 +73,16 @@ type Callable interface {
 	Call() (interface{}, error)
 }
 
-func (p *GoPool) SubmitFunc(callfunc func() (interface{}, error)) *Future {
-	return p.Submit(CallFunc(callfunc))
+func (p *GoPool) SubmitFunc(ctx context.Context, callfunc func() (interface{}, error)) *Future {
+	return p.Submit(ctx, CallFunc(callfunc))
 }
 
-func (p *GoPool) Submit(callable Callable) *Future {
+func (p *GoPool) Submit(ctx context.Context, callable Callable) *Future {
 	if callable == nil {
 		panic("gopool: callback is nil")
 	}
-	ctx, cancel := context.WithCancel(context.TODO())
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithCancel(ctx)
 	f := &Future{
 		callable: callable,
 		result:   make(chan interface{}, 1),

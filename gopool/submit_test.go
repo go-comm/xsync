@@ -1,6 +1,7 @@
 package gopool
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -11,7 +12,7 @@ func Test_Submit(t *testing.T) {
 
 	expect := 2
 
-	f := p.SubmitFunc(func() (interface{}, error) {
+	f := p.SubmitFunc(context.TODO(), func() (interface{}, error) {
 		time.Sleep(time.Millisecond * 100)
 		// wrong := 0
 		// _ = 1 / wrong
