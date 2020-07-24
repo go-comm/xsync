@@ -1,9 +1,13 @@
 package gopool
 
-import "github.com/go-comm/xsync/blocking"
+import (
+	"time"
+
+	"github.com/go-comm/xsync/blocking"
+)
 
 func NewWithCached(opts ...Option) *GoPool {
-	return New(0, maxCoreSize, 30, blocking.NewBoundedQueue(1), opts...)
+	return New(0, maxCoreSize, 30*time.Second, blocking.NewBoundedQueue(1), opts...)
 }
 
 func NewWithFixed(n int, opts ...Option) *GoPool {
