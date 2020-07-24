@@ -2,7 +2,7 @@ package gopool
 
 import (
 	"context"
-	"fmt"
+	"errors"
 )
 
 type Future struct {
@@ -25,31 +25,42 @@ func (f *Future) Result() <-chan interface{} {
 	return f.result
 }
 
+func (f *Future) errorHandler(m *Message, err interface{}) {
+	PrintStack(err)
+	select {
+	case f.done <- WrappedError(err):
+	default:
+	}
+	if f.result != nil {
+		close(f.result)
+	}
+	if f.done != nil {
+		close(f.done)
+	}
+}
+
+func (f *Future) rejectMessage(m *Message) {
+	select {
+	case f.done <- errors.New("gopool: message reject"):
+	default:
+	}
+	if f.result != nil {
+		close(f.result)
+	}
+	if f.done != nil {
+		close(f.done)
+	}
+}
+
 func (f *Future) run() {
-	defer func() {
-		if err := recover(); err != nil {
-			PrintStack(err)
-			select {
-			case f.done <- fmt.Errorf("%v", err):
-			default:
-			}
-		}
+	select {
+	case <-f.ctx.Done():
 		if err := f.ctx.Err(); err != nil {
 			select {
 			case f.done <- err:
 			default:
 			}
 		}
-		if f.result != nil {
-			close(f.result)
-		}
-		if f.done != nil {
-			close(f.done)
-		}
-	}()
-
-	select {
-	case <-f.ctx.Done():
 		return
 	default:
 	}
@@ -79,7 +90,7 @@ func (p *GoPool) SubmitFunc(ctx context.Context, callfunc func() (interface{}, e
 
 func (p *GoPool) Submit(ctx context.Context, callable Callable) *Future {
 	if callable == nil {
-		panic("gopool: callback is nil")
+		panic("gopool: callable is nil")
 	}
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithCancel(ctx)
@@ -90,6 +101,6 @@ func (p *GoPool) Submit(ctx context.Context, callable Callable) *Future {
 		ctx:      ctx,
 		cancel:   cancel,
 	}
-	p.Go(f.run)
+	p.Go(ctx, f.run, WithErrorHandler(f.errorHandler), WithRejectMessage(f.rejectMessage))
 	return f
 }

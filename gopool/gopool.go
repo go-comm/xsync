@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,7 +32,7 @@ func New(coreSize, maxCoreSize int, keepAliveTime time.Duration, queue blocking.
 		queue:         queue,
 	}
 	for _, opt := range opts {
-		opt(p)
+		opt(&p.opts)
 	}
 	if coreSize < 0 || maxCoreSize <= 0 || maxCoreSize < coreSize || keepAliveTime < 0 {
 		panic(fmt.Errorf("gopool: illegal argument, coreSize:%v maxCoreSize:%v keepAliveTime:%v", coreSize, maxCoreSize, keepAliveTime))
@@ -39,46 +40,66 @@ func New(coreSize, maxCoreSize int, keepAliveTime time.Duration, queue blocking.
 	if p.queue == nil {
 		p.queue = blocking.NewUnBoundedQueue()
 	}
-	if p.errorHandler == nil {
-		p.errorHandler = DefaultErrorHandler
+	if p.opts.errorHandler == nil {
+		p.opts.errorHandler = DefaultErrorHandler
+	}
+	if p.opts.rejectMessage == nil {
+		p.opts.rejectMessage = DefaultRejectMessage
 	}
 	p.workers = list.New()
 	return p
 }
 
-type Option func(*GoPool)
-
-func WithKeepAliveTime(keepAliveTime time.Duration) Option {
-	return func(p *GoPool) {
-		p.keepAliveTime = keepAliveTime
-	}
+type Options struct {
+	handleMessage func(*Message)
+	rejectMessage func(*Message)
+	errorHandler  func(*Message, interface{})
 }
 
+type Option func(*Options)
+
 func WithHandleMessage(h func(*Message)) Option {
-	return func(p *GoPool) {
-		p.handeMessage = h
+	return func(opts *Options) {
+		opts.handleMessage = h
 	}
 }
 
 func WithRejectMessage(h func(*Message)) Option {
-	return func(p *GoPool) {
-		p.rejectMessage = h
+	return func(opts *Options) {
+		opts.rejectMessage = h
 	}
 }
 
 func WithErrorHandler(h func(*Message, interface{})) Option {
-	return func(p *GoPool) {
-		p.errorHandler = h
+	return func(opts *Options) {
+		opts.errorHandler = h
 	}
 }
 
-func DefaultErrorHandler(m *Message, e interface{}) {
-	PrintStack(e)
+func DefaultErrorHandler(m *Message, err interface{}) {
+	PrintStack(err)
+}
+
+func DefaultRejectMessage(m *Message) {
+	log.Printf("gopool: message reject")
 }
 
 type Message struct {
-	Callback func()
+	Ctx      context.Context
+	opts     Options
 	Arg      interface{}
+	Callback func()
+}
+
+func clearMessage(m *Message) {
+	if m != nil {
+		m.Ctx = nil
+		m.Arg = nil
+		m.Callback = nil
+		m.opts.handleMessage = nil
+		m.opts.rejectMessage = nil
+		m.opts.errorHandler = nil
+	}
 }
 
 type GoPool struct {
@@ -87,22 +108,26 @@ type GoPool struct {
 	maxCoreSize   int32
 	keepAliveTime time.Duration
 	queue         blocking.Queue
-	handeMessage  func(*Message)
-	rejectMessage func(*Message)
-	errorHandler  func(*Message, interface{})
+	opts          Options
 	workers       *list.List
 	mutex         sync.RWMutex
 }
 
-func (p *GoPool) Go(fn func()) {
-	p.Send(&Message{Callback: fn})
+func (p *GoPool) Go(ctx context.Context, fn func(), opts ...Option) {
+	p.Send(&Message{Ctx: ctx, Callback: fn}, opts...)
 }
 
-func (p *GoPool) Exec(arg interface{}) {
-	p.Send(&Message{Arg: arg})
+func (p *GoPool) Exec(ctx context.Context, arg interface{}, opts ...Option) {
+	p.Send(&Message{Ctx: ctx, Arg: arg}, opts...)
 }
 
-func (p *GoPool) Send(m *Message) {
+func (p *GoPool) Send(m *Message, opts ...Option) {
+	for _, opt := range opts {
+		opt(&m.opts)
+	}
+	if m.Ctx == nil {
+		m.Ctx = context.TODO()
+	}
 	state := atomic.LoadInt32(&p.state)
 	if p.workerCount(state) < p.coreSize {
 		if p.addWorker(m) {
@@ -185,14 +210,22 @@ func (p *GoPool) offerToQueue(m *Message) bool {
 }
 
 func (p *GoPool) reject(m *Message) {
-	if p.rejectMessage != nil {
-		p.rejectMessage(m)
+	reject := m.opts.rejectMessage
+	if reject == nil {
+		reject = p.opts.rejectMessage
+	}
+	if reject != nil {
+		reject(m)
 	}
 }
 
 func (p *GoPool) handleError(m *Message, e interface{}) {
-	if p.errorHandler != nil {
-		p.errorHandler(m, e)
+	h := m.opts.errorHandler
+	if h == nil {
+		h = p.opts.errorHandler
+	}
+	if h != nil {
+		h(m, e)
 	}
 }
 

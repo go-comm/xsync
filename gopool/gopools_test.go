@@ -1,6 +1,7 @@
 package gopool
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,7 +11,7 @@ func Test_Single_Go(t *testing.T) {
 	p := NewWithSingle()
 	got := make(chan int)
 	expect := 10
-	p.Go(func() {
+	p.Go(context.TODO(), func() {
 		got <- expect
 	})
 
@@ -23,7 +24,7 @@ func Test_Single_Go(t *testing.T) {
 
 func calcAdd(t *testing.T, p *GoPool, n int, counter *int32) {
 	for i := 0; i < n; i++ {
-		p.Exec(int32(i))
+		p.Exec(context.TODO(), int32(i))
 	}
 	// t.Log("workCount", p.WorkerCount())
 	p.ShutdownAndWait()

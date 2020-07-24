@@ -92,12 +92,28 @@ func (w *worker) dispatchMessage(m *Message) {
 		if err := recover(); err != nil {
 			p.handleError(m, err)
 		}
+		clearMessage(m)
 	}()
+
+	if m.Ctx != nil {
+		select {
+		case <-m.Ctx.Done():
+			if err := m.Ctx.Err(); err != nil {
+				p.handleError(m, err)
+			}
+			return
+		default:
+		}
+	}
 
 	callback := m.Callback
 	if callback == nil {
-		if p.handeMessage != nil {
-			p.handeMessage(m)
+		h := m.opts.handleMessage
+		if h == nil {
+			h = p.opts.handleMessage
+		}
+		if h != nil {
+			h(m)
 		}
 	} else {
 		callback()

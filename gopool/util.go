@@ -1,6 +1,7 @@
 package gopool
 
 import (
+	"fmt"
 	"log"
 	"runtime"
 	"sync"
@@ -17,4 +18,12 @@ func PrintStack(err interface{}) {
 	n := runtime.Stack(buf[:], false)
 	log.Printf("gopool:  %+v\n%s", err, string(buf[:n]))
 	stackBytesPool.Put(buf)
+}
+
+func WrappedError(err interface{}) error {
+	e, ok := err.(error)
+	if !ok {
+		e = fmt.Errorf("%v", err)
+	}
+	return e
 }
