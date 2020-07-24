@@ -39,6 +39,7 @@ func (w *worker) isRunning(state int32) bool {
 
 func (w *worker) run() {
 	var ctx context.Context
+	var cancel context.CancelFunc
 	var state int32
 	p := w.p
 	defer func() {
@@ -63,9 +64,13 @@ Loop:
 		if w.isRunning(state) {
 			keepAliveTime = p.KeepAliveTime()
 			if keepAliveTime > 0 {
-				ctx, _ = context.WithTimeout(ctx, keepAliveTime)
+				ctx, cancel = context.WithTimeout(ctx, keepAliveTime)
 			}
 			im = p.queue.Take(ctx)
+			if cancel != nil {
+				cancel()
+				cancel = nil
+			}
 		} else if state <= stateWorkerShutdown {
 			im = p.queue.Poll(ctx)
 		} else {
