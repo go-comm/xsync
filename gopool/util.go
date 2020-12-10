@@ -2,9 +2,17 @@ package gopool
 
 import (
 	"fmt"
-	"log"
 	"runtime"
 	"sync"
+
+	"github.com/go-comm/xsync/internal/trace"
+)
+
+var (
+	ERR trace.Logger = trace.NOOPLogger{}
+	INF trace.Logger = trace.NOOPLogger{}
+	WRN trace.Logger = trace.NOOPLogger{}
+	DBG trace.Logger = trace.NOOPLogger{}
 )
 
 var stackBytesPool = sync.Pool{
@@ -16,7 +24,7 @@ var stackBytesPool = sync.Pool{
 func PrintStack(err interface{}) {
 	buf := stackBytesPool.Get().([]byte)
 	n := runtime.Stack(buf[:], false)
-	log.Printf("gopool:  %+v\n%s", err, string(buf[:n]))
+	DBG.Println("gopool:", err, string(buf[:n]))
 	stackBytesPool.Put(buf)
 }
 

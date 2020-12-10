@@ -3,75 +3,99 @@ package gopool
 import (
 	"context"
 	"errors"
+	"sync"
+	"time"
 )
 
-type Future struct {
+type Future interface {
+	Cancel()
+	Wait() bool
+	WaitTimeout(d time.Duration) bool
+	Result() (result interface{}, err error)
+}
+
+type future struct {
+	mutex    sync.RWMutex
 	callable Callable
-	result   chan interface{}
-	done     chan error
+	complete chan struct{}
+	err      error
+	result   interface{}
 	ctx      context.Context
-	cancel   context.CancelFunc
 }
 
-func (f *Future) Cancel() {
-	f.cancel()
+func (f *future) Cancel() {
+	f.flowComplete()
 }
 
-func (f *Future) Done() <-chan error {
-	return f.done
+func (f *future) setResult(result interface{}, err error) {
+	f.mutex.Lock()
+	f.err = err
+	f.result = result
+	f.mutex.Unlock()
 }
 
-func (f *Future) Result() <-chan interface{} {
-	return f.result
+func (f *future) Wait() bool {
+	<-f.complete
+	return true
 }
 
-func (f *Future) errorHandler(m *Message, err interface{}) {
+func (f *future) WaitTimeout(d time.Duration) bool {
+	t := time.NewTimer(d)
+	select {
+	case <-f.complete:
+	case <-t.C:
+		return false
+	}
+	if !t.Stop() {
+		<-t.C
+	}
+	return true
+}
+
+func (f *future) flowComplete() {
+	select {
+	case <-f.complete:
+	default:
+		close(f.complete)
+	}
+}
+
+func (f *future) Result() (result interface{}, err error) {
+	f.mutex.RLock()
+	err = f.err
+	result = f.result
+	f.mutex.RUnlock()
+	return
+}
+
+func (f *future) errorHandler(m *Message, err interface{}) {
+	f.setResult(WrappedError(err), nil)
+	f.flowComplete()
 	PrintStack(err)
-	select {
-	case f.done <- WrappedError(err):
-	default:
-	}
-	if f.result != nil {
-		close(f.result)
-	}
-	if f.done != nil {
-		close(f.done)
-	}
 }
 
-func (f *Future) rejectMessage(m *Message) {
-	select {
-	case f.done <- errors.New("gopool: message reject"):
-	default:
-	}
-	if f.result != nil {
-		close(f.result)
-	}
-	if f.done != nil {
-		close(f.done)
-	}
+func (f *future) rejectMessage(m *Message) {
+	f.setResult(errors.New("gopool: message reject"), nil)
+	f.flowComplete()
 }
 
-func (f *Future) run() {
+func (f *future) run() {
 	select {
 	case <-f.ctx.Done():
-		if err := f.ctx.Err(); err != nil {
-			select {
-			case f.done <- err:
-			default:
-			}
-		}
+		f.setResult(nil, f.ctx.Err())
+		f.flowComplete()
 		return
 	default:
 	}
-
-	result, err := f.callable.Call()
-	if f.result != nil {
-		f.result <- result
-	}
-	if f.done != nil {
-		f.done <- err
-	}
+	func() {
+		defer func() {
+			if err := recover(); err != nil {
+				f.setResult(nil, WrappedError(err))
+			}
+			f.flowComplete()
+		}()
+		f.setResult(f.callable.Call())
+	}()
 }
 
 type CallFunc func() (interface{}, error)
@@ -84,22 +108,18 @@ type Callable interface {
 	Call() (interface{}, error)
 }
 
-func (p *GoPool) SubmitFunc(ctx context.Context, callfunc func() (interface{}, error)) *Future {
+func (p *goPool) SubmitFunc(ctx context.Context, callfunc func() (interface{}, error)) Future {
 	return p.Submit(ctx, CallFunc(callfunc))
 }
 
-func (p *GoPool) Submit(ctx context.Context, callable Callable) *Future {
+func (p *goPool) Submit(ctx context.Context, callable Callable) Future {
 	if callable == nil {
 		panic("gopool: callable is nil")
 	}
-	var cancel context.CancelFunc
-	ctx, cancel = context.WithCancel(ctx)
-	f := &Future{
+	f := &future{
 		callable: callable,
-		result:   make(chan interface{}, 1),
-		done:     make(chan error, 1),
+		complete: make(chan struct{}),
 		ctx:      ctx,
-		cancel:   cancel,
 	}
 	p.Go(ctx, f.run, WithErrorHandler(f.errorHandler), WithRejectMessage(f.rejectMessage))
 	return f

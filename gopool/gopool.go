@@ -4,7 +4,6 @@ import (
 	"container/list"
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,8 +23,8 @@ const (
 	stateTerminal = 2 << bits
 )
 
-func New(coreSize, maxCoreSize int, keepAliveTime time.Duration, queue blocking.Queue, opts ...Option) *GoPool {
-	p := &GoPool{
+func New(coreSize, maxCoreSize int, keepAliveTime time.Duration, queue blocking.Queue, opts ...Option) GoPool {
+	p := &goPool{
 		coreSize:      int32(coreSize),
 		maxCoreSize:   int32(maxCoreSize),
 		keepAliveTime: keepAliveTime,
@@ -81,14 +80,32 @@ func DefaultErrorHandler(m *Message, err interface{}) {
 }
 
 func DefaultRejectMessage(m *Message) {
-	log.Printf("gopool: message reject")
+	DBG.Println("gopool: message reject")
 }
 
 type Message struct {
 	Ctx      context.Context
+	remain   time.Duration
+	index    int
 	opts     Options
 	Arg      interface{}
 	Callback func()
+}
+
+func (m *Message) Value() interface{} {
+	return m
+}
+
+func (m *Message) Index() int {
+	return m.index
+}
+
+func (m *Message) SetIndex(i int) {
+	m.index = i
+}
+
+func (m *Message) Remain() time.Duration {
+	return m.remain
 }
 
 func clearMessage(m *Message) {
@@ -102,7 +119,35 @@ func clearMessage(m *Message) {
 	}
 }
 
-type GoPool struct {
+type GoPool interface {
+	Go(ctx context.Context, fn func(), opts ...Option)
+
+	Exec(ctx context.Context, arg interface{}, opts ...Option)
+
+	Send(m *Message, opts ...Option)
+
+	IsRunning() bool
+
+	IsShutdown() bool
+
+	WorkerCount() int
+
+	Queue() blocking.Queue
+
+	Reject(m *Message)
+
+	EnsurePrestart()
+
+	Shutdown()
+
+	ShutdownAndWait()
+
+	SubmitFunc(ctx context.Context, callfunc func() (interface{}, error)) Future
+
+	Submit(ctx context.Context, callable Callable) Future
+}
+
+type goPool struct {
 	state         int32
 	coreSize      int32
 	maxCoreSize   int32
@@ -113,15 +158,15 @@ type GoPool struct {
 	mutex         sync.RWMutex
 }
 
-func (p *GoPool) Go(ctx context.Context, fn func(), opts ...Option) {
+func (p *goPool) Go(ctx context.Context, fn func(), opts ...Option) {
 	p.Send(&Message{Ctx: ctx, Callback: fn}, opts...)
 }
 
-func (p *GoPool) Exec(ctx context.Context, arg interface{}, opts ...Option) {
+func (p *goPool) Exec(ctx context.Context, arg interface{}, opts ...Option) {
 	p.Send(&Message{Ctx: ctx, Arg: arg}, opts...)
 }
 
-func (p *GoPool) Send(m *Message, opts ...Option) {
+func (p *goPool) Send(m *Message, opts ...Option) {
 	for _, opt := range opts {
 		opt(&m.opts)
 	}
@@ -136,35 +181,57 @@ func (p *GoPool) Send(m *Message, opts ...Option) {
 		state = atomic.LoadInt32(&p.state)
 	}
 
-	if p.isRunning(state) && p.offerToQueue(m) {
+	if p.isRunning(state) && p.queue.Offer(context.TODO(), m) {
 		state = atomic.LoadInt32(&p.state)
 		if p.workerCount(state) == 0 {
 			p.addWorker(nil)
 		}
 	} else if !p.addWorker(m) {
-		p.reject(m)
+		p.Reject(m)
 	}
 
 }
 
-func (p *GoPool) workerCount(state int32) int32 {
+func (p *goPool) EnsurePrestart() {
+	state := atomic.LoadInt32(&p.state)
+	wc := p.workerCount(state)
+	if wc == 0 {
+		p.addWorker(nil)
+	} else if wc < p.coreSize {
+		p.addWorker(nil)
+	}
+}
+
+func (p *goPool) workerCount(state int32) int32 {
 	return state & capacityMask
 }
 
-func (p *GoPool) WorkerCount() int {
+func (p *goPool) WorkerCount() int {
 	state := atomic.LoadInt32(&p.state)
 	return int(p.workerCount(state))
 }
 
-func (p *GoPool) KeepAliveTime() time.Duration {
+func (p *goPool) KeepAliveTime() time.Duration {
 	return p.keepAliveTime
 }
 
-func (p *GoPool) isRunning(state int32) bool {
+func (p *goPool) isRunning(state int32) bool {
 	return state < stateShutdown
 }
 
-func (p *GoPool) addWorker(m *Message) bool {
+func (p *goPool) IsRunning() bool {
+	return p.isRunning(atomic.LoadInt32(&p.state))
+}
+
+func (p *goPool) IsShutdown() bool {
+	return !p.isRunning(atomic.LoadInt32(&p.state))
+}
+
+func (p *goPool) Queue() blocking.Queue {
+	return p.queue
+}
+
+func (p *goPool) addWorker(m *Message) bool {
 	for {
 		state := atomic.LoadInt32(&p.state)
 		if p.workerCount(state) >= p.maxCoreSize {
@@ -183,7 +250,7 @@ func (p *GoPool) addWorker(m *Message) bool {
 	return true
 }
 
-func (p *GoPool) removeWorker(w *worker) {
+func (p *goPool) removeWorker(w *worker) {
 	for {
 		state := atomic.LoadInt32(&p.state)
 		if atomic.CompareAndSwapInt32(&p.state, state, state-1) {
@@ -205,11 +272,7 @@ func (p *GoPool) removeWorker(w *worker) {
 	}
 }
 
-func (p *GoPool) offerToQueue(m *Message) bool {
-	return p.queue.Offer(context.TODO(), m)
-}
-
-func (p *GoPool) reject(m *Message) {
+func (p *goPool) Reject(m *Message) {
 	reject := m.opts.rejectMessage
 	if reject == nil {
 		reject = p.opts.rejectMessage
@@ -219,7 +282,7 @@ func (p *GoPool) reject(m *Message) {
 	}
 }
 
-func (p *GoPool) handleError(m *Message, e interface{}) {
+func (p *goPool) handleError(m *Message, e interface{}) {
 	h := m.opts.errorHandler
 	if h == nil {
 		h = p.opts.errorHandler
@@ -229,7 +292,7 @@ func (p *GoPool) handleError(m *Message, e interface{}) {
 	}
 }
 
-func (p *GoPool) shutdownAndWait(wait bool) {
+func (p *goPool) shutdownAndWait(wait bool) {
 	var ws []*worker
 	state := atomic.LoadInt32(&p.state)
 	if p.isRunning(state) {
@@ -253,10 +316,10 @@ func (p *GoPool) shutdownAndWait(wait bool) {
 	}
 }
 
-func (p *GoPool) Shutdown() {
+func (p *goPool) Shutdown() {
 	p.shutdownAndWait(false)
 }
 
-func (p *GoPool) ShutdownAndWait() {
+func (p *goPool) ShutdownAndWait() {
 	p.shutdownAndWait(true)
 }

@@ -13,7 +13,7 @@ const (
 	stateWorkerTerminal
 )
 
-func newWorker(p *GoPool) *worker {
+func newWorker(p *goPool) *worker {
 	w := &worker{
 		p:     p,
 		state: stateWorkerNone,
@@ -24,7 +24,7 @@ func newWorker(p *GoPool) *worker {
 }
 
 type worker struct {
-	p            *GoPool
+	p            *goPool
 	firstMessage *Message
 	elem         *list.Element
 	state        int32

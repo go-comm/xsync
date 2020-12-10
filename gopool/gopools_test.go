@@ -22,7 +22,7 @@ func Test_Single_Go(t *testing.T) {
 
 }
 
-func calcAdd(t *testing.T, p *GoPool, n int, counter *int32) {
+func calcAdd(t *testing.T, p GoPool, n int, counter *int32) {
 	for i := 0; i < n; i++ {
 		p.Exec(context.TODO(), int32(i))
 	}
