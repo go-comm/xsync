@@ -11,138 +11,134 @@ type Queue interface {
 	Poll(ctx context.Context) interface{}
 	Put(ctx context.Context, x interface{}) bool
 	Take(ctx context.Context) interface{}
+	Remove(ctx context.Context, x interface{}) bool
 }
 
-func NewBoundedQueue(size int) Queue {
-	return &BoundedQueue{c: make(chan interface{}, size)}
-}
-
-type BoundedQueue struct {
-	c chan interface{}
-}
-
-func (q *BoundedQueue) Offer(ctx context.Context, x interface{}) bool {
-	select {
-	case q.c <- x:
-		return true
-	default:
-		return false
+func NewBoundedQueue(capacity int) Queue {
+	return &queue{
+		capacity: capacity,
+		list:     list.New(),
+		in:       make(chan struct{}, 0),
+		out:      make(chan struct{}, 0),
 	}
 }
 
-func (q *BoundedQueue) Put(ctx context.Context, x interface{}) bool {
-	select {
-	case <-ctx.Done():
-		return false
-	case q.c <- x:
-		return true
+func NewUnBoundedQueue() Queue {
+	return &queue{
+		capacity: 1 << 31,
+		list:     list.New(),
+		in:       make(chan struct{}, 0),
+		out:      make(chan struct{}, 0),
 	}
 }
 
-func (q *BoundedQueue) Poll(ctx context.Context) interface{} {
-	select {
-	case x := <-q.c:
-		return x
-	default:
-		return nil
-	}
+type queue struct {
+	mutex    sync.RWMutex
+	list     *list.List
+	capacity int
+	in       chan struct{}
+	out      chan struct{}
 }
 
-func (q *BoundedQueue) Take(ctx context.Context) interface{} {
-	select {
-	case <-ctx.Done():
-		return nil
-	case x := <-q.c:
-		return x
-	}
+func (q *queue) Offer(ctx context.Context, x interface{}) bool {
+	return q.enqueue(ctx, x, false)
 }
 
-func NewUnBoundedQueue(bufSize ...int) Queue {
-	size := 1024
-	if len(bufSize) > 0 && bufSize[0] > 0 {
-		size = bufSize[0]
-	}
-	return &UnBoundedQueue{
-		list: list.New(),
-		c:    make(chan interface{}, size),
-	}
+func (q *queue) Put(ctx context.Context, x interface{}) bool {
+	return q.enqueue(ctx, x, true)
 }
 
-type UnBoundedQueue struct {
-	list  *list.List
-	mutex sync.RWMutex
-	c     chan interface{}
-}
-
-func (q *UnBoundedQueue) Offer(ctx context.Context, x interface{}) bool {
-	return q.Put(ctx, x)
-}
-
-func (q *UnBoundedQueue) Put(ctx context.Context, x interface{}) bool {
-	select {
-	case q.c <- x:
-		return true
-	default:
-		q.mutex.Lock()
-		q.list.PushBack(x)
-		q.mutex.Unlock()
-		return true
-	}
-}
-
-func (q *UnBoundedQueue) Take(ctx context.Context) interface{} {
-	return q.take(ctx, true)
-}
-
-func (q *UnBoundedQueue) Poll(ctx context.Context) interface{} {
-	return q.take(ctx, false)
-}
-
-func (q *UnBoundedQueue) take(ctx context.Context, wait bool) interface{} {
-	select {
-	case x := <-q.c:
-		return x
-	default:
-		break
-	}
-
-	var result interface{}
-	q.mutex.Lock()
-INSERT:
+func (q *queue) enqueue(ctx context.Context, x interface{}, wait bool) bool {
+	finished := false
+LOOP:
 	for {
-		e := q.list.Front()
-		if e == nil {
-			break
+		q.mutex.Lock()
+		if q.list.Len() < q.capacity {
+			q.list.PushBack(x)
+			finished = true
 		}
-		if result == nil {
-			result = e.Value
-			q.list.Remove(e)
-			continue
+		q.mutex.Unlock()
+		if finished || !wait {
+			break LOOP
 		}
+		if wait {
+			select {
+			case <-ctx.Done():
+				break LOOP
+			case q.in <- struct{}{}:
+			}
+		}
+	}
+
+	if finished {
 		select {
-		case q.c <- e.Value:
-			q.list.Remove(e)
+		case q.out <- struct{}{}:
 		default:
-			break INSERT
+		}
+	}
+	return finished
+}
+
+func (q *queue) Remove(ctx context.Context, x interface{}) bool {
+	removed := false
+	q.mutex.Lock()
+	for e := q.list.Front(); e != nil; e = e.Next() {
+		if Equal(e.Value, x) {
+			removed = true
+			q.list.Remove(e)
 		}
 	}
 	q.mutex.Unlock()
 
-	if result == nil {
-		if ctx == nil || !wait {
-			select {
-			case x := <-q.c:
-				return x
-			default:
-				return nil
-			}
-		}
-
+	if removed {
 		select {
-		case <-ctx.Done():
-		case x := <-q.c:
-			return x
+		case <-q.in:
+		default:
 		}
 	}
+
+	return true
+}
+
+func (q *queue) Take(ctx context.Context) interface{} {
+	return q.dequeue(ctx, true)
+}
+
+func (q *queue) Poll(ctx context.Context) interface{} {
+	return q.dequeue(ctx, false)
+}
+
+func (q *queue) dequeue(ctx context.Context, wait bool) interface{} {
+	var result interface{}
+LOOP:
+	for {
+		q.mutex.Lock()
+		e := q.list.Front()
+		if e != nil {
+			result = e.Value
+			q.list.Remove(e)
+		}
+		q.mutex.Unlock()
+
+		if result != nil || !wait {
+			break LOOP
+		}
+
+		if result == nil && wait {
+			select {
+			case <-q.out:
+			case <-ctx.Done():
+				break LOOP
+			}
+		}
+	}
+
+	if result != nil {
+		select {
+		case <-q.in:
+		default:
+		}
+	}
+
 	return result
 }

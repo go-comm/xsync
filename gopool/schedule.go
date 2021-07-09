@@ -9,40 +9,38 @@ import (
 )
 
 type ScheduledFuture interface {
-	Cancel()
+	Message
+	blocking.Delayed
+
 	Wait() bool
 	WaitTimeout(d time.Duration) bool
 	Err() error
 }
 
 type ScheduledPool interface {
+	GoPool
+
 	Schedule(ctx context.Context, fn func(), delay time.Duration, opts ...Option) ScheduledFuture
 	ScheduleAt(ctx context.Context, fn func(), delay time.Time, opts ...Option) ScheduledFuture
 }
 
 type scheduledPool struct {
-	pool GoPool
+	GoPool
 }
 
 type scheduledFuture struct {
 	mutex    sync.RWMutex
-	ctx      context.Context
 	p        *scheduledPool
+	fn       func()
 	err      error
 	complete chan struct{}
-	fn       func()
-	m        *Message
+
+	Message
+	blocking.Delayed
 }
 
 func (f *scheduledFuture) Cancel() {
-	if f.m != nil {
-		f.mutex.Lock()
-		if f.m != nil {
-			f.p.remove(f.m)
-			f.m = nil
-		}
-		f.mutex.Unlock()
-	}
+	f.Message.Cancel()
 	f.flowComplete()
 }
 
@@ -85,10 +83,10 @@ func (f *scheduledFuture) flowComplete() {
 	}
 }
 
-func (f *scheduledFuture) run() {
+func (f *scheduledFuture) handleMessage(m Message) {
 	select {
-	case <-f.ctx.Done():
-		f.setErr(f.ctx.Err())
+	case <-f.Context().Done():
+		f.setErr(f.Context().Err())
 		f.flowComplete()
 		return
 	default:
@@ -106,14 +104,13 @@ func (f *scheduledFuture) run() {
 
 func (p *scheduledPool) Schedule(ctx context.Context, fn func(), delay time.Duration, opts ...Option) ScheduledFuture {
 	f := &scheduledFuture{
-		ctx:      ctx,
 		complete: make(chan struct{}),
 		p:        p,
 		fn:       fn,
 	}
-	m := &Message{Ctx: ctx, remain: delay, Callback: f.run}
-	f.m = m
-	p.send(m, opts...)
+	f.Delayed = blocking.ObtainDelayed(delay)
+	f.Message = p.GoPool.ObtainMessage(ctx, nil, nil, WithHandleMessage(f.handleMessage))
+	p.send(f)
 	return f
 }
 
@@ -121,24 +118,10 @@ func (p *scheduledPool) ScheduleAt(ctx context.Context, fn func(), delay time.Ti
 	return p.Schedule(ctx, fn, delay.Sub(time.Now()), opts...)
 }
 
-func (p *scheduledPool) send(m *Message, opts ...Option) {
-	for _, opt := range opts {
-		opt(&m.opts)
-	}
-	if m.Ctx == nil {
-		m.Ctx = context.TODO()
-	}
-	if p.pool.IsShutdown() || !p.pool.Queue().Offer(context.TODO(), m) {
-		p.pool.Reject(m)
+func (p *scheduledPool) send(m Message) {
+	if p.GoPool.IsShutdown() || !p.GoPool.Queue().Offer(context.TODO(), m) {
+		p.GoPool.Reject(m)
 		return
 	}
-	p.pool.EnsurePrestart()
-}
-
-func (p *scheduledPool) remove(m *Message) {
-	queue, ok := p.pool.Queue().(*blocking.DelayedQueue)
-	if !ok {
-		return
-	}
-	queue.Remove(context.TODO(), m)
+	p.GoPool.EnsurePrestart()
 }

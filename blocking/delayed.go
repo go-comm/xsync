@@ -9,33 +9,58 @@ import (
 	"github.com/go-comm/xsync/internal/pqueue"
 )
 
-type DelayedIndexSetter interface {
+type Delayed interface {
+	Remain() time.Duration
+	Index() int
 	SetIndex(i int)
 }
 
-type DelayedIndexGetter interface {
-	Index() int
+type delayed struct {
+	remain time.Duration
+	index  int
 }
 
-type Delayed interface {
-	Value() interface{}
-	Remain() time.Duration
+func (d *delayed) Remain() time.Duration {
+	return d.remain
 }
 
-func NewDelayedQueue(capacity int) *DelayedQueue {
-	return &DelayedQueue{
+func (d *delayed) Index() int {
+	return d.index
+}
+
+func (d *delayed) SetIndex(i int) {
+	d.index = i
+}
+
+func ObtainDelayed(remain time.Duration) Delayed {
+	return &delayed{remain, -1}
+}
+
+type DelayedQueue interface {
+	Queue
+}
+
+func NewDelayedQueue(capacity int) *delayedQueue {
+	return &delayedQueue{
 		pq:      pqueue.New(capacity),
 		changed: make(chan struct{}, 0),
 	}
 }
 
-type DelayedQueue struct {
+type delayedQueue struct {
 	mutex   sync.RWMutex
 	pq      pqueue.PriorityQueue
 	changed chan struct{}
 }
 
-func (q *DelayedQueue) Put(ctx context.Context, x interface{}) bool {
+func (q *delayedQueue) notifyDataChanged() {
+	select {
+	case q.changed <- struct{}{}:
+	default:
+	}
+}
+
+func (q *delayedQueue) Put(ctx context.Context, x interface{}) bool {
 	if x == nil {
 		return false
 	}
@@ -50,20 +75,18 @@ func (q *DelayedQueue) Put(ctx context.Context, x interface{}) bool {
 	q.mutex.Lock()
 	heap.Push(&q.pq, item)
 	q.mutex.Unlock()
-	if setter, ok := x.(DelayedIndexSetter); ok {
+	if setter, ok := x.(interface {
+		SetIndex(int)
+	}); ok {
 		setter.SetIndex(item.Index)
 	}
 	addToFront := item.Index == 0
 	if addToFront {
-		select {
-		case q.changed <- struct{}{}:
-		default:
-		}
 	}
 	return true
 }
 
-func (q *DelayedQueue) Take(ctx context.Context) interface{} {
+func (q *delayedQueue) Take(ctx context.Context) interface{} {
 LOOP:
 	for {
 		now := time.Now().UnixNano()
@@ -71,30 +94,22 @@ LOOP:
 		item, limit := q.pq.PeekAndShift(now)
 		q.mutex.Unlock()
 		if item != nil {
-			select {
-			case q.changed <- struct{}{}:
-			default:
-			}
+			q.notifyDataChanged()
 			return item.Value
 		}
-		wait := time.NewTimer(time.Duration(limit) + time.Microsecond)
+		nctx, cancel := context.WithTimeout(ctx, time.Duration(limit))
 		select {
-		case <-ctx.Done():
-			if !wait.Stop() {
-				<-wait.C
-			}
+		case <-nctx.Done():
+			cancel()
 			break LOOP
 		case <-q.changed:
-			if !wait.Stop() {
-				<-wait.C
-			}
-		case <-wait.C:
+			cancel()
 		}
 	}
 	return nil
 }
 
-func (q *DelayedQueue) Offer(ctx context.Context, x interface{}) bool {
+func (q *delayedQueue) Offer(ctx context.Context, x interface{}) bool {
 	if x == nil {
 		return false
 	}
@@ -109,80 +124,47 @@ func (q *DelayedQueue) Offer(ctx context.Context, x interface{}) bool {
 	q.mutex.Lock()
 	heap.Push(&q.pq, item)
 	q.mutex.Unlock()
-	if setter, ok := x.(DelayedIndexSetter); ok {
+	if setter, ok := x.(interface {
+		SetIndex(int)
+	}); ok {
 		setter.SetIndex(item.Index)
 	}
 	addToFront := item.Index == 0
 	if addToFront {
-		select {
-		case q.changed <- struct{}{}:
-		default:
-		}
+		q.notifyDataChanged()
 	}
 	return true
 }
 
-func (q *DelayedQueue) Poll(ctx context.Context) interface{} {
+func (q *delayedQueue) Poll(ctx context.Context) interface{} {
 	now := time.Now().UnixNano()
 	q.mutex.Lock()
 	item, _ := q.pq.PeekAndShift(now)
 	q.mutex.Unlock()
 	if item != nil {
-		select {
-		case q.changed <- struct{}{}:
-		default:
-		}
+		q.notifyDataChanged()
 		return item.Value
 	}
 	return nil
 }
 
-func (q *DelayedQueue) Remove(ctx context.Context, x interface{}) bool {
-	getter, ok := x.(DelayedIndexGetter)
+func (q *delayedQueue) Remove(ctx context.Context, x interface{}) bool {
+	getter, ok := x.(interface {
+		Index() int
+	})
 	if !ok {
 		return false
 	}
 	return q.RemoveIndex(ctx, getter.Index())
 }
 
-func (q *DelayedQueue) RemoveIndex(ctx context.Context, i int) bool {
+func (q *delayedQueue) RemoveIndex(ctx context.Context, i int) bool {
 	q.mutex.Lock()
 	removeFromFront := i == 0
 	heap.Remove(&q.pq, i)
 	q.mutex.Unlock()
 	if removeFromFront {
-		select {
-		case q.changed <- struct{}{}:
-		default:
-		}
+		q.notifyDataChanged()
 	}
 	return true
-}
-
-func (q *DelayedQueue) DrainTo(ctx context.Context, s []Delayed) int {
-	var size int
-	if len(s) <= 0 {
-		return 0
-	}
-	now := time.Now().UnixNano()
-	q.mutex.Lock()
-	for {
-		if size >= len(s) {
-			break
-		}
-		item, _ := q.pq.PeekAndShift(now)
-		if item == nil {
-			break
-		}
-		s[size], _ = item.Value.(Delayed)
-		size++
-	}
-	q.mutex.Unlock()
-	if size > 0 {
-		select {
-		case q.changed <- struct{}{}:
-		default:
-		}
-	}
-	return size
 }

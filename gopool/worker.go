@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"sync/atomic"
+	"time"
 )
 
 const (
@@ -19,52 +20,51 @@ func newWorker(p *goPool) *worker {
 		state: stateWorkerNone,
 		done:  make(chan struct{}),
 	}
-	w.ctx, w.cancel = context.WithCancel(context.Background())
+	w.ctx, w.cancel = context.WithCancel(p.Context())
 	return w
 }
 
 type worker struct {
-	p            *goPool
-	firstMessage *Message
-	elem         *list.Element
-	state        int32
-	ctx          context.Context
-	cancel       context.CancelFunc
-	done         chan struct{}
+	p      *goPool
+	elem   *list.Element
+	state  int32
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func (w *worker) isRunning(state int32) bool {
 	return state == stateWorkerRunning
 }
 
-func (w *worker) run() {
-	var ctx context.Context
-	var cancel context.CancelFunc
-	var state int32
+func (w *worker) run(m Message) {
 	p := w.p
 	defer func() {
 		atomic.StoreInt32(&w.state, stateWorkerTerminal)
 		close(w.done)
 		p.removeWorker(w)
 	}()
-	keepAliveTime := p.KeepAliveTime()
+
 	atomic.StoreInt32(&w.state, stateWorkerRunning)
 
-	if w.firstMessage != nil {
-		m := w.firstMessage
-		w.firstMessage = nil
+	if m != nil {
 		w.dispatchMessage(m)
 	}
+
+	var ctx context.Context
+	var cancel context.CancelFunc
+	var im interface{}
+	var state int32
+	var keepAliveTime time.Duration
 
 Loop:
 	for {
 		state = atomic.LoadInt32(&w.state)
-		ctx = w.ctx
-		var im interface{}
 		if w.isRunning(state) {
 			keepAliveTime = p.KeepAliveTime()
+			ctx = w.ctx
 			if keepAliveTime > 0 {
-				ctx, cancel = context.WithTimeout(ctx, keepAliveTime)
+				ctx, cancel = context.WithTimeout(w.ctx, keepAliveTime)
 			}
 			im = p.queue.Take(ctx)
 			if cancel != nil {
@@ -84,38 +84,35 @@ Loop:
 				break Loop
 			}
 		}
-
-		if m, ok := im.(*Message); ok {
+		if m, ok := im.(Message); ok {
 			w.dispatchMessage(m)
 		}
 	}
 }
 
-func (w *worker) dispatchMessage(m *Message) {
+func (w *worker) dispatchMessage(m Message) {
 	p := w.p
 	defer func() {
 		if err := recover(); err != nil {
 			p.handleError(m, err)
 		}
-		clearMessage(m)
+		p.ReleaseMessage(m)
 	}()
 
-	if m.Ctx != nil {
-		select {
-		case <-m.Ctx.Done():
-			if err := m.Ctx.Err(); err != nil {
-				p.handleError(m, err)
-			}
-			return
-		default:
+	select {
+	case <-m.Context().Done():
+		if err := m.Context().Err(); err != nil {
+			p.handleError(m, err)
 		}
+		return
+	default:
 	}
 
-	callback := m.Callback
+	callback := m.Callback()
 	if callback == nil {
-		h := m.opts.handleMessage
+		h := m.Options().HandleMessage
 		if h == nil {
-			h = p.opts.handleMessage
+			h = p.Options().HandleMessage
 		}
 		if h != nil {
 			h(m)
@@ -139,4 +136,11 @@ func (w *worker) wait() {
 	if atomic.LoadInt32(&w.state) < stateWorkerTerminal {
 		<-w.done
 	}
+}
+
+func (w *worker) Release() {
+	w.p = nil
+	w.ctx = nil
+	w.cancel = nil
+	w.elem = nil
 }

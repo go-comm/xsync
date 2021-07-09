@@ -8,7 +8,8 @@ import (
 )
 
 type Future interface {
-	Cancel()
+	Message
+
 	Wait() bool
 	WaitTimeout(d time.Duration) bool
 	Result() (result interface{}, err error)
@@ -20,7 +21,7 @@ type future struct {
 	complete chan struct{}
 	err      error
 	result   interface{}
-	ctx      context.Context
+	Message
 }
 
 func (f *future) Cancel() {
@@ -47,7 +48,10 @@ func (f *future) WaitTimeout(d time.Duration) bool {
 		return false
 	}
 	if !t.Stop() {
-		<-t.C
+		select {
+		case <-t.C:
+		default:
+		}
 	}
 	return true
 }
@@ -68,21 +72,21 @@ func (f *future) Result() (result interface{}, err error) {
 	return
 }
 
-func (f *future) errorHandler(m *Message, err interface{}) {
+func (f *future) errorHandler(m Message, err interface{}) {
 	f.setResult(WrappedError(err), nil)
 	f.flowComplete()
 	PrintStack(err)
 }
 
-func (f *future) rejectMessage(m *Message) {
+func (f *future) rejectMessage(m Message) {
 	f.setResult(errors.New("gopool: message reject"), nil)
 	f.flowComplete()
 }
 
-func (f *future) run() {
+func (f *future) handleMessage(m Message) {
 	select {
-	case <-f.ctx.Done():
-		f.setResult(nil, f.ctx.Err())
+	case <-f.Context().Done():
+		f.setResult(nil, f.Context().Err())
 		f.flowComplete()
 		return
 	default:
@@ -119,8 +123,12 @@ func (p *goPool) Submit(ctx context.Context, callable Callable) Future {
 	f := &future{
 		callable: callable,
 		complete: make(chan struct{}),
-		ctx:      ctx,
 	}
-	p.Go(ctx, f.run, WithErrorHandler(f.errorHandler), WithRejectMessage(f.rejectMessage))
+	f.Message = p.ObtainMessage(ctx, nil, nil,
+		WithHandleMessage(f.handleMessage),
+		WithErrorHandler(f.errorHandler),
+		WithRejectMessage(f.rejectMessage),
+	)
+	p.Send(f)
 	return f
 }

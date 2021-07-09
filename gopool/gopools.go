@@ -20,6 +20,6 @@ func NewWithSingle(opts ...Option) GoPool {
 
 func NewScheduled(n int, opts ...Option) ScheduledPool {
 	return &scheduledPool{
-		pool: New(n, n, 0, blocking.NewDelayedQueue(16), opts...),
+		GoPool: New(n, n, 0, blocking.NewDelayedQueue(16), opts...),
 	}
 }
